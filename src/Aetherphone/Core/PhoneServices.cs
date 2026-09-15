@@ -154,6 +154,7 @@ internal sealed class PhoneServices : IDisposable
     public required StratsManifestStore StratsManifest { get; init; }
     public required StratsGuideStore StratsGuides { get; init; }
     public required MusterStore Musters { get; init; }
+    public required PartyFinder.PartyFinderStore PartyFinderListings { get; init; }
     public required MusterLauncher MusterLauncher { get; init; }
 
     public required RadioLauncher RadioLauncher { get; init; }
@@ -191,7 +192,8 @@ internal sealed class PhoneServices : IDisposable
 
     public static PhoneServices Build(Configuration configuration, IChatGui chatGui, IDataManager dataManager,
         IObjectTable objectTable, IClientState clientState, IFramework framework, IDutyState dutyState,
-        ITextureProvider textures, DirectoryInfo configDirectory, IUnlockState unlockState, ICondition condition)
+        ITextureProvider textures, DirectoryInfo configDirectory, IUnlockState unlockState, ICondition condition,
+        IPartyFinderGui partyFinderGui)
     {
         var installer = new Home.AppInstaller();
         var builtInWallpaperDirectory = new DirectoryInfo(
@@ -348,6 +350,7 @@ internal sealed class PhoneServices : IDisposable
             realtimeSignals);
         var musters = new MusterStore(aethernetSession, aethernet.Musters, notifications, configuration,
             visibility, realtimeSignals, installer.Gate(MusterStore.AppId));
+        var partyFinder = new PartyFinder.PartyFinderStore(partyFinderGui, framework);
         var yellowPages = new YellowPagesStore(aethernetSession, aethernet.Ads, aethernet.Media, configuration,
             visibility, realtimeSignals, installer.Gate(YellowPagesStore.AppId));
         var adInquiries = new AdInquiryStore(aethernetSession, aethernet.Ads, aethernet.Safety, keyVault, conversationKeys,
@@ -474,6 +477,7 @@ internal sealed class PhoneServices : IDisposable
             StratsManifest = stratsManifest,
             StratsGuides = stratsGuides,
             Musters = musters,
+            PartyFinderListings = partyFinder,
             MusterLauncher = new MusterLauncher(),
             RadioLauncher = new RadioLauncher(),
             YellowPages = yellowPages,
@@ -536,6 +540,7 @@ internal sealed class PhoneServices : IDisposable
         StratsManifest.Dispose();
         StratsGuides.Dispose();
         Musters.Dispose();
+        PartyFinderListings.Dispose();
         YellowPages.Dispose();
         AdInquiries.Dispose();
         SongPlayer.Dispose();

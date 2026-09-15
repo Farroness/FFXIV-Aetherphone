@@ -3,6 +3,7 @@ using Aetherphone.Core.Aethernet.Contracts;
 using Aetherphone.Core.Localization;
 using Aetherphone.Core.Muster;
 using Aetherphone.Core.Onboarding;
+using Aetherphone.Core.PartyFinder;
 using Aetherphone.Core.Theme;
 using Aetherphone.Windows.Components;
 using Dalamud.Bindings.ImGui;
@@ -19,18 +20,21 @@ internal sealed partial class MusterApp
     private const float ChipHeight = 32f;
     private const int SectionFallbackRebuildSeconds = 30;
 
-    private readonly List<MusterDto> goingSection = new();
-    private readonly List<MusterDto> friendSection = new();
-    private readonly List<MusterDto> liveSection = new();
-    private readonly List<MusterDto> soonSection = new();
+    private readonly List<MusterEntry> goingSection = new();
+    private readonly List<MusterEntry> friendSection = new();
+    private readonly List<MusterEntry> liveSection = new();
+    private readonly List<MusterEntry> soonSection = new();
     private readonly string[] chipLabels = new string[16];
     private readonly bool[] chipActive = new bool[16];
     private readonly string[] scopeLabels = new string[3];
     private readonly ChipRail categoryRail = new();
     private readonly PullToRefresh directoryRefresh = new();
+    private readonly PartyFinderStore partyFinder;
     private MusterDto[] lastContacts = Array.Empty<MusterDto>();
     private MusterDto[] lastDirectory = Array.Empty<MusterDto>();
     private MusterDto[] lastGoing = Array.Empty<MusterDto>();
+    private PartyFinderDto[] lastPartyFinder = Array.Empty<PartyFinderDto>();
+    private string lastLanguageCode = string.Empty;
     private MusterDto? lastMine;
     private long nextSectionRebuildUnix;
 
@@ -39,10 +43,17 @@ internal sealed partial class MusterApp
         var scale = UiScale.Current;
         var nowUnix = NowUnix();
         var currentDataCenterId = store.CurrentDataCenterId;
+        var signedIn = store.IsSignedIn;
         DrawDirectoryHeader(area, scale);
         var controlsTop = area.Min.Y + AppHeader.Height * scale;
-        DrawScopeRow(area, controlsTop, scale);
-        var body = new Rect(new Vector2(area.Min.X, controlsTop + ControlRowHeight * scale), area.Max);
+        var bodyTop = controlsTop;
+        if (signedIn)
+        {
+            DrawScopeRow(area, controlsTop, scale);
+            bodyTop = controlsTop + ControlRowHeight * scale;
+        }
+
+        var body = new Rect(new Vector2(area.Min.X, bodyTop), area.Max);
         EnsureSections(nowUnix);
         using (var surface = AppSurface.BeginEdgeToEdge(body))
         {
@@ -50,7 +61,7 @@ internal sealed partial class MusterApp
                 AppPalettes.Muster.MutedInk, RefreshEverything);
             ImGui.Dummy(new Vector2(0f, Metrics.Space.Xs * scale));
             DrawCategoryRail(scale);
-            if (store.Mine is { } mine)
+            if (signedIn && store.Mine is { } mine)
             {
                 DrawMinePinned(mine, nowUnix, scale);
             }
@@ -87,13 +98,16 @@ internal sealed partial class MusterApp
                     DrawCards(soonSection, nowUnix, currentDataCenterId, scale);
                 }
 
-                DrawLoadMore(scale);
+                if (signedIn)
+                {
+                    DrawLoadMore(scale);
+                }
             }
 
             ImGui.Dummy(new Vector2(0f, Metrics.Space.Lg * scale));
         }
 
-        if (store.Mine is null && ComposeFab.Draw(body, "##musterStartFab", ui.Accent,
+        if (signedIn && store.Mine is null && ComposeFab.Draw(body, "##musterStartFab", ui.Accent,
                 IconGlyph.Of(FontAwesomeIcon.Bullhorn), Loc.T(L.Muster.StartMuster), "muster.start"))
         {
             router.Push(MusterRoute.Create);
@@ -273,8 +287,13 @@ internal sealed partial class MusterApp
         }
     }
 
-    private void DrawGoingRow(MusterDto muster, long nowUnix, float scale)
+    private void DrawGoingRow(in MusterEntry entry, long nowUnix, float scale)
     {
+        if (!entry.TryGetMuster(out var muster))
+        {
+            return;
+        }
+
         var drawList = ImGui.GetWindowDrawList();
         var cell = FeedCell.Begin(drawList, GoingRowHeight * scale, ui.HoverWash);
         var card = cell.Bounds;
@@ -347,18 +366,25 @@ internal sealed partial class MusterApp
         return tapped;
     }
 
-    private void DrawCards(List<MusterDto> items, long nowUnix, int currentDataCenterId, float scale)
+    private void DrawCards(List<MusterEntry> items, long nowUnix, int currentDataCenterId, float scale)
     {
         var drawList = ImGui.GetWindowDrawList();
         var width = ScrollLayout.StableContentWidth();
         for (var index = 0; index < items.Count; index++)
         {
-            var muster = items[index];
-            var cell = FeedCell.Begin(drawList, MusterCard.Height(muster, width, scale), ui.HoverWash);
-            if (ImGui.IsRectVisible(cell.Bounds.Min, cell.Bounds.Max) && MusterCard.Draw(cell, muster, images,
+            var entry = items[index];
+            var cell = FeedCell.Begin(drawList, MusterCard.Height(entry, width, scale), ui.HoverWash);
+            if (ImGui.IsRectVisible(cell.Bounds.Min, cell.Bounds.Max) && MusterCard.Draw(cell, entry, images,
                     lodestone, theme, ui, nowUnix, currentDataCenterId))
             {
-                OpenDetail(muster.Id);
+                if (entry.IsMuster)
+                {
+                    OpenDetail(entry.Muster.Id);
+                }
+                else
+                {
+                    OpenPartyFinderSheet(entry.PartyFinder);
+                }
             }
 
             FeedCell.End(drawList, cell, ui.Hairline);
@@ -438,8 +464,12 @@ internal sealed partial class MusterApp
         var directory = store.Directory;
         var going = store.GoingMusters;
         var mine = store.Mine;
+        var listings = partyFinder.Listings;
+        var languageCode = Loc.Current.Code;
         if (ReferenceEquals(contacts, lastContacts) && ReferenceEquals(directory, lastDirectory)
             && ReferenceEquals(going, lastGoing) && ReferenceEquals(mine, lastMine)
+            && ReferenceEquals(listings, lastPartyFinder)
+            && string.Equals(languageCode, lastLanguageCode, StringComparison.Ordinal)
             && nowUnix < nextSectionRebuildUnix)
         {
             return;
@@ -449,6 +479,8 @@ internal sealed partial class MusterApp
         lastDirectory = directory;
         lastGoing = going;
         lastMine = mine;
+        lastPartyFinder = listings;
+        lastLanguageCode = languageCode;
         goingSection.Clear();
         friendSection.Clear();
         liveSection.Clear();
@@ -472,7 +504,7 @@ internal sealed partial class MusterApp
                 continue;
             }
 
-            goingSection.Add(muster);
+            goingSection.Add(MusterEntry.FromMuster(muster));
             nextBoundary = Math.Min(nextBoundary, muster.EndsAtUnix);
             if (muster.StartsAtUnix > nowUnix)
             {
@@ -488,7 +520,7 @@ internal sealed partial class MusterApp
                 continue;
             }
 
-            friendSection.Add(muster);
+            friendSection.Add(MusterEntry.FromMuster(muster));
             nextBoundary = Math.Min(nextBoundary, muster.EndsAtUnix);
             if (muster.StartsAtUnix > nowUnix)
             {
@@ -517,13 +549,31 @@ internal sealed partial class MusterApp
             nextBoundary = Math.Min(nextBoundary, muster.EndsAtUnix);
             if (muster.StartsAtUnix <= nowUnix)
             {
-                liveSection.Add(muster);
+                liveSection.Add(MusterEntry.FromMuster(muster));
             }
             else
             {
-                soonSection.Add(muster);
+                soonSection.Add(MusterEntry.FromMuster(muster));
                 nextBoundary = Math.Min(nextBoundary, muster.StartsAtUnix);
             }
+        }
+
+        var categoryMask = configuration.MusterCategoryFilter;
+        for (var index = 0; index < listings.Length; index++)
+        {
+            var listing = listings[index];
+            if (listing.ExpiresAtUnix <= nowUnix)
+            {
+                continue;
+            }
+
+            if (categoryMask != 0 && (categoryMask & (1 << listing.Category)) == 0)
+            {
+                continue;
+            }
+
+            liveSection.Add(MusterEntry.FromPartyFinder(listing));
+            nextBoundary = Math.Min(nextBoundary, listing.ExpiresAtUnix);
         }
 
         nextSectionRebuildUnix = nextBoundary == long.MaxValue

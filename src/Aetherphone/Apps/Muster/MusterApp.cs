@@ -10,6 +10,7 @@ using Aetherphone.Core.Lodestone;
 using Aetherphone.Core.Media;
 using Aetherphone.Core.Muster;
 using Aetherphone.Core.Onboarding;
+using Aetherphone.Core.PartyFinder;
 using Aetherphone.Core.Report;
 using Aetherphone.Core.Theme;
 using Aetherphone.Core.Venues;
@@ -40,6 +41,7 @@ internal sealed partial class MusterApp : IPhoneApp
     private readonly ReportService report;
     private readonly ConductGateService conduct;
     private readonly AppSkin ui = new(AppPalettes.Muster);
+    private readonly PartyFinderSheet partyFinderSheet = new();
     private readonly ViewRouter<MusterRoute> router;
     private readonly RouterDraw<MusterRoute> drawView;
     private readonly Action back;
@@ -54,12 +56,13 @@ internal sealed partial class MusterApp : IPhoneApp
     private int createMaxAttendees = DefaultMaxAttendees;
     private float invitedTimer;
 
-    public MusterApp(MusterStore store, MusterLauncher launcher, AethernetApi api, GameData gameData,
-        RemoteImageCache images, LodestoneService lodestone, Configuration configuration, ConfirmService confirm,
-        TranslationService translation,         ReportService report, ConductGateService conduct)
+    public MusterApp(MusterStore store, MusterLauncher launcher, PartyFinderStore partyFinder, AethernetApi api,
+        GameData gameData, RemoteImageCache images, LodestoneService lodestone, Configuration configuration,
+        ConfirmService confirm, TranslationService translation, ReportService report, ConductGateService conduct)
     {
         this.store = store;
         this.launcher = launcher;
+        this.partyFinder = partyFinder;
         this.api = api;
         this.gameData = gameData;
         this.images = images;
@@ -80,7 +83,7 @@ internal sealed partial class MusterApp : IPhoneApp
     {
         router.Reset();
         lifestreamAvailable = LifestreamBridge.IsAvailable();
-        if (launcher.TryConsumeDetail(out var musterId))
+        if (launcher.TryConsumeDetail(out var musterId) && store.IsSignedIn)
         {
             ResetDetailState();
             router.Push(MusterRoute.Detail(musterId), false);
@@ -95,6 +98,7 @@ internal sealed partial class MusterApp : IPhoneApp
         router.Reset();
         ResetDetailState();
         ResetManageState();
+        partyFinderSheet.Close();
         copiedTimer = 0f;
     }
 
@@ -106,7 +110,7 @@ internal sealed partial class MusterApp : IPhoneApp
         var scale = UiScale.Current;
         var screen = SceneChrome.ScreenFrom(context.Content, theme, scale);
         ui.Backdrop(screen);
-        if (!store.IsSignedIn)
+        if (!store.IsSignedIn && partyFinder.Listings.Length == 0)
         {
             TourHolds.Hold(Id);
             var rowCenterY = context.Content.Min.Y + AppHeader.Height * scale * 0.5f;
@@ -135,7 +139,9 @@ internal sealed partial class MusterApp : IPhoneApp
             invitedTimer -= ImGui.GetIO().DeltaTime;
         }
 
+        partyFinderSheet.Gate();
         router.Draw(context.Content, AppSkin.Transparent, ImGui.GetIO().DeltaTime, drawView);
+        partyFinderSheet.Draw(screen, ui);
     }
 
     private void DrawView(MusterRoute route, Rect area, int depth)
@@ -166,6 +172,8 @@ internal sealed partial class MusterApp : IPhoneApp
         ResetDetailState();
         router.Push(MusterRoute.Detail(musterId));
     }
+
+    private void OpenPartyFinderSheet(PartyFinderDto listing) => partyFinderSheet.Open(listing);
 
     private void Copy(string key, string text)
     {
